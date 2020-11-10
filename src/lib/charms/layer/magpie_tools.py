@@ -1,13 +1,18 @@
 #!/usr/bin/env python
 
+import asyncio
+import datetime
+import copy
 import os
 import subprocess
+import math
 import re
 import time
 import json
 from charmhelpers.core import hookenv
 from charmhelpers.core.host import get_nic_mtu, service_start, service_running
 from charmhelpers.fetch import apt_install
+import charmhelpers.contrib.network.ip as ch_ip
 
 
 class Lldp():
@@ -67,11 +72,14 @@ class Lldp():
             hookenv.log('No LLDP data for {}'.format(iface), 'INFO')
             return None
 
-
 class Iperf():
     """
     Install and start a server automatically
     """
+
+    BATCH_CTRL_FILE = '/tmp/batch_hostcheck.ctrl'
+    IPERF_BASE_PORT = 5001
+
     def __init__(self):
         self.iperf_out = '/home/ubuntu/iperf_output.' + \
             hookenv.application_name() + '.txt'
@@ -79,10 +87,13 @@ class Iperf():
     def install_iperf(self):
         apt_install("iperf")
 
-    def listen(self):
-        ip = hookenv.network_get('magpie')[
-            'bind-addresses'][0]['addresses'][0]['address']
-        cmd = "iperf -s -m -fm -B " + ip + " | tee " + self.iperf_out + " &"
+    def listen(self, cidr=None, port=None):
+        port = port or self.IPERF_BASE_PORT
+        if cidr:
+            bind_addreess = ch_ip.get_address_in_network(cidr)
+        else:
+            bind_addreess = hookenv.network_get('magpie')['bind-addresses'][0]['addresses'][0]['address']
+        cmd = "iperf -s -m -fm --port " + str(port) + " -B " + bind_addreess + " | tee " + self.iperf_out + " &"
         os.system(cmd)
 
     def mtu(self):
@@ -115,6 +126,99 @@ class Iperf():
             hookenv.log(msg)
             cmd = "iperf -t1 -c {}".format(node[1])
             os.system(cmd)
+
+    def get_increment(self, total_runtime, progression):
+        return datetime.timedelta(
+            minutes=math.ceil(total_runtime / len(progression)))
+
+    def get_plan(self, progression, increment):
+        now = datetime.datetime.now()
+        plan = []
+        for i in enumerate(progression):
+            start_time = now + (i[0] * increment)
+            plan.append((start_time, i[1]))
+        return plan
+
+    def update_plan(self, plan, skip_to, increment):
+        progression = []
+        for (_time, conc) in plan:
+            if conc >= skip_to:
+                progression.append(conc)
+        return self.get_plan(progression, increment)
+
+    def get_concurrency(self, plan):
+        now = datetime.datetime.now()
+        for (_time, conc) in reversed(plan):
+            if _time < now:
+                return conc
+
+    def wipe_batch_ctrl_file(self):
+        with open(self.BATCH_CTRL_FILE, "w") as ctrl_file:
+            ctrl_file.truncate(0)
+
+    def read_batch_ctrl_file(self):
+        with open(self.BATCH_CTRL_FILE, 'r') as ctrl_file:
+            contents = ctrl_file.read()
+        return contents
+
+    def batch_hostcheck(self, nodes, total_runtime, iperf_batch_time=None,
+                        progression=None):
+        iperf_batch_time = iperf_batch_time or 60
+        progression = progression or [4, 8, 16, 24, 32, 40]
+        increment = self.get_increment(total_runtime, progression)
+        plan = self.get_plan(progression, increment)
+        finish_time = datetime.datetime.now() + datetime.timedelta(
+            minutes=total_runtime)
+
+        self.wipe_batch_ctrl_file()
+        while datetime.datetime.now() < finish_time:
+
+            async def run(cmd):
+                proc = await asyncio.create_subprocess_shell(
+                    cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE)
+
+                stdout, stderr = await proc.communicate()
+
+                print(f'[{cmd!r} exited with {proc.returncode}]')
+                if stdout:
+                    print(f'[stdout]\n{stdout.decode()}')
+                if stderr:
+                    print(f'[stderr]\n{stderr.decode()}')
+
+            async def run_iperf(ip, port, iperf_batch_time):
+                cmd = "iperf -t{} -c {} --port {}".format(
+                    iperf_batch_time,
+                    ip,
+                    port)
+                await run(cmd)
+                return port
+
+            async def run_iperf_batch(count, nodes, iperf_batch_time):
+                await asyncio.gather(
+                    *[run_iperf(ip, port, iperf_batch_time)
+                      for port in range(self.IPERF_BASE_PORT,
+                                        self.IPERF_BASE_PORT + count)
+                      for _, ip in nodes])
+
+            contents = self.read_batch_ctrl_file()
+            if contents:
+                try:
+                    print("SKIPPING TO {}".format(contents))
+                    plan = self.update_plan(plan, int(contents), increment)
+                    self.wipe_batch_ctrl_file()
+                except ValueError:
+                    pass
+            concurrency = self.get_concurrency(plan)
+            hookenv.status_set(
+                'active',
+                'Concurrency: {} Nodes: {}'.format(
+                    concurrency,
+                    ', '.join([i[0] for i in nodes])))
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(
+                run_iperf_batch(concurrency, nodes, iperf_batch_time))
 
 
 def safe_status(workload, status):
