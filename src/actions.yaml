@@ -22,15 +22,17 @@ run-iperf:
       type: string
       description: Space seperated list of units
     iperf-batch-time:
-      type: string
+      type: integer
+      default: 10
       description: |
         Maps to iperf -t option, time in seconds to transmit traffic
     concurrency-progression:
       type: string
+      default: "2 4 8"
       description: |
         Space seperated list of concurrencty value for each batch
     total-run-time:
       type: integer
+      default: 300
       description: |
         Total run time for iperf test
-

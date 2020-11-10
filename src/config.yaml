@@ -67,3 +67,8 @@ options:
         ppa:somecustom/ppa (PPA name must include UCA OpenStack Release name)
         deb url sources entry|key id
         or a supported Ubuntu Cloud Archive pocket.
+  push-gateway:
+    type: string
+    default:
+    description: |
+      IP address of Prometheus Push Gateway

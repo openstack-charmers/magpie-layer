@@ -13,6 +13,7 @@ from charmhelpers.core import hookenv
 from charmhelpers.core.host import get_nic_mtu, service_start, service_running
 from charmhelpers.fetch import apt_install
 import charmhelpers.contrib.network.ip as ch_ip
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
 
 
 class Lldp():
@@ -162,7 +163,7 @@ class Iperf():
         return contents
 
     def batch_hostcheck(self, nodes, total_runtime, iperf_batch_time=None,
-                        progression=None):
+                        progression=None, push_gateway=None):
         iperf_batch_time = iperf_batch_time or 60
         progression = progression or [4, 8, 16, 24, 32, 40]
         increment = self.get_increment(total_runtime, progression)
@@ -184,23 +185,53 @@ class Iperf():
                 print(f'[{cmd!r} exited with {proc.returncode}]')
                 if stdout:
                     print(f'[stdout]\n{stdout.decode()}')
+                    return stdout.decode()
                 if stderr:
                     print(f'[stderr]\n{stderr.decode()}')
 
-            async def run_iperf(ip, port, iperf_batch_time):
-                cmd = "iperf -t{} -c {} --port {}".format(
+            async def run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=None):
+                node_name = node_name.replace('/', '_')
+                cmd = "iperf -t{} -c {} --port {}  --reportstyle c --format m".format(
                     iperf_batch_time,
                     ip,
                     port)
-                await run(cmd)
+                out = await run(cmd)
+                if out:
+                    out = out.rstrip().split(',')
+                    results = {
+                        'timestamp': out[0],
+                        'src_ip': out[1],
+                        'src_port': out[2],
+                        'dest_ip': out[3],
+                        'dest_port': out[4],
+                        'unknown1': out[5],
+                        'time_interval': out[6],
+                        'data_transferred_KBytes': out[7],
+                        'bandwidth_Kbits_sec': out[8],
+                    }
+                    if push_gateway:
+                        registry = CollectorRegistry()
+                        metric_gauge1 = Gauge(
+                            'iperf_{}{}_bandwidth'.format(
+                                results['src_port'],
+                                results['dest_port']),
+                            'iperf {} to {}:{} bandwidth (Kbits/s)'.format(
+                                results['src_ip'],
+                                results['dest_ip'],
+                                results['dest_port']),
+                            ['unit'], registry=registry)
+                        metric_gauge1.labels(node_name).set(results['bandwidth_Kbits_sec'])
+                        push_to_gateway('http://{}:9091'.format(push_gateway),
+                            job='iperf',
+                            registry=registry)
                 return port
 
-            async def run_iperf_batch(count, nodes, iperf_batch_time):
+            async def run_iperf_batch(count, nodes, iperf_batch_time, push_gateway=None):
                 await asyncio.gather(
-                    *[run_iperf(ip, port, iperf_batch_time)
+                    *[run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=push_gateway)
                       for port in range(self.IPERF_BASE_PORT,
                                         self.IPERF_BASE_PORT + count)
-                      for _, ip in nodes])
+                      for node_name, ip in nodes])
 
             contents = self.read_batch_ctrl_file()
             if contents:
@@ -218,7 +249,11 @@ class Iperf():
                     ', '.join([i[0] for i in nodes])))
             loop = asyncio.get_event_loop()
             result = loop.run_until_complete(
-                run_iperf_batch(concurrency, nodes, iperf_batch_time))
+                run_iperf_batch(
+                    concurrency,
+                    nodes,
+                    iperf_batch_time,
+                    push_gateway=push_gateway))
 
 
 def safe_status(workload, status):

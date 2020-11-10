@@ -1,2 +1,8 @@
 repo: git@github.com:openstack-charmers/magpie-layer.git
 includes: ['layer:basic', 'interface:magpie', 'layer:leadership']
+options:
+  basic:
+    use_venv: True
+    include_system_packages: False
+    python_packages: ['prometheus_client']
+

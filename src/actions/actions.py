@@ -50,6 +50,7 @@ def run_iperf(*args):
     cidr = action_config.get('network-cidr')
     units = action_config.get('units')
     magpie = reactive.relations.endpoint_from_flag('magpie.joined')
+    config = hookenv.config()
     _nodes = magpie.get_nodes(cidr=cidr)
     if units:
         nodes = [n for n in _nodes if n[0] in units.split()]
@@ -60,7 +61,8 @@ def run_iperf(*args):
         nodes,
         action_config.get('total-run-time'),
         action_config.get('iperf-batch-time'),
-        [int(i) for i in action_config.get('concurrency-progression').split()])
+        [int(i) for i in action_config.get('concurrency-progression').split()],
+        push_gateway=config['push-gateway'])
 
 # Actions to function mapping, to allow for illegal python action names that
 # can map to a python function.
