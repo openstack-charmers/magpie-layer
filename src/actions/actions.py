@@ -47,22 +47,23 @@ def advertise(*args):
 
 def run_iperf(*args):
     action_config = hookenv.action_get()
-    cidr = action_config.get('network-cidr')
-    units = action_config.get('units')
-    magpie = reactive.relations.endpoint_from_flag('magpie.joined')
     config = hookenv.config()
-    _nodes = magpie.get_nodes(cidr=cidr)
-    if units:
-        nodes = [n for n in _nodes if n[0] in units.split()]
-    else:
-        nodes = _nodes
+    cidr = action_config.get('network-cidr')
+    units = action_config.get('units', '').split()
+    magpie = reactive.relations.endpoint_from_flag('magpie.joined')
+    push_gateway = config['push-gateway']
+    if push_gateway:
+        push_gateway = 'http://{}:9091'.format(push_gateway)
+    nodes = {ip: name
+             for name, ip in magpie.get_nodes(cidr=cidr)
+             if not units or name in units}
     iperf = Iperf()
     iperf.batch_hostcheck(
         nodes,
         action_config.get('total-run-time'),
         action_config.get('iperf-batch-time'),
         [int(i) for i in action_config.get('concurrency-progression').split()],
-        push_gateway=config['push-gateway'])
+        push_gateway=push_gateway)
 
 # Actions to function mapping, to allow for illegal python action names that
 # can map to a python function.

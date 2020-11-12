@@ -162,8 +162,58 @@ class Iperf():
             contents = ctrl_file.read()
         return contents
 
+    def add_iperf_bandwidth_metric(self, registry, src_unit, dst_unit, value):
+        """
+        labels:
+            fio_{read|write}_{iops,bandwidth,latency}
+            rbd_bench_{read|write}_??
+            rados_bench_{read|write}_??
+        """
+        metric_gauge = Gauge(
+            'iperf_{}_to_{}_bandwidth'.format(src_unit, dst_unit),
+            'iperf from {} to {} bandwidth (bits/s)'.format(src_unit, dst_unit),
+            ['src', 'dest'],
+            registry=registry)
+        print(value)
+        metric_gauge.labels(src=src_unit, dest=dst_unit).set(value)
+
+    def add_iperf_concurrency_metric(self, registry, src_unit, dst_unit, value):
+        metric_gauge = Gauge(
+            'iperf_{}_to_{}_concurrency'.format(src_unit, dst_unit),
+            'iperf from {} to {} concurrency'.format(src_unit, dst_unit),
+             ['src', 'dest'],
+             registry=registry)
+        metric_gauge.labels(src=src_unit, dest=dst_unit).set(value)
+
+    def process_results(self, results, nodes, push_gateway):
+        bandwidth = {ip:0 for ip in nodes.keys()}
+        threads = copy.deepcopy(bandwidth)
+        src_unit = hookenv.local_unit().replace('/', '_')
+        registry = CollectorRegistry()
+        for result in results:
+            bandwidth[result['dest_ip']] += math.ceil(
+                int(result['bits_per_second']))
+            threads[result['dest_ip']] += 1
+        for ip, node_name in nodes.items():
+            dst_unit = node_name.replace('/', '_')
+            self.add_iperf_bandwidth_metric(
+                registry,
+                src_unit,
+                dst_unit,
+                bandwidth[ip])
+            self.add_iperf_concurrency_metric(
+                registry,
+                src_unit,
+                dst_unit,
+                threads[ip])
+            push_to_gateway(push_gateway,
+                job='iperf',
+                registry=registry)
+
     def batch_hostcheck(self, nodes, total_runtime, iperf_batch_time=None,
                         progression=None, push_gateway=None):
+        # XXX
+        nodes = {'172.20.0.16': 'magpie/1'}
         iperf_batch_time = iperf_batch_time or 60
         progression = progression or [4, 8, 16, 24, 32, 40]
         increment = self.get_increment(total_runtime, progression)
@@ -175,6 +225,7 @@ class Iperf():
         while datetime.datetime.now() < finish_time:
 
             async def run(cmd):
+                print(cmd)
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -182,16 +233,14 @@ class Iperf():
 
                 stdout, stderr = await proc.communicate()
 
-                print(f'[{cmd!r} exited with {proc.returncode}]')
                 if stdout:
-                    print(f'[stdout]\n{stdout.decode()}')
                     return stdout.decode()
                 if stderr:
                     print(f'[stderr]\n{stderr.decode()}')
 
             async def run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=None):
                 node_name = node_name.replace('/', '_')
-                cmd = "iperf -t{} -c {} --port {}  --reportstyle c --format m".format(
+                cmd = "iperf -t{} -c {} --port {}  --reportstyle c".format(
                     iperf_batch_time,
                     ip,
                     port)
@@ -206,32 +255,22 @@ class Iperf():
                         'dest_port': out[4],
                         'unknown1': out[5],
                         'time_interval': out[6],
-                        'data_transferred_KBytes': out[7],
-                        'bandwidth_Kbits_sec': out[8],
+                        'transferred_bytes': out[7],
+                        'bits_per_second': out[8],
                     }
-                    if push_gateway:
-                        registry = CollectorRegistry()
-                        metric_gauge1 = Gauge(
-                            'iperf_{}{}_bandwidth'.format(
-                                results['src_port'],
-                                results['dest_port']),
-                            'iperf {} to {}:{} bandwidth (Kbits/s)'.format(
-                                results['src_ip'],
-                                results['dest_ip'],
-                                results['dest_port']),
-                            ['unit'], registry=registry)
-                        metric_gauge1.labels(node_name).set(results['bandwidth_Kbits_sec'])
-                        push_to_gateway('http://{}:9091'.format(push_gateway),
-                            job='iperf',
-                            registry=registry)
-                return port
+                    return results
+                return {}
 
             async def run_iperf_batch(count, nodes, iperf_batch_time, push_gateway=None):
-                await asyncio.gather(
+                results = await asyncio.gather(
                     *[run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=push_gateway)
                       for port in range(self.IPERF_BASE_PORT,
                                         self.IPERF_BASE_PORT + count)
-                      for node_name, ip in nodes])
+                      for ip, node_name, in nodes.items()])
+                
+                if push_gateway:
+                    self.process_results(results, nodes, push_gateway)
+
 
             contents = self.read_batch_ctrl_file()
             if contents:
@@ -248,6 +287,9 @@ class Iperf():
                     concurrency,
                     ', '.join([i[0] for i in nodes])))
             loop = asyncio.get_event_loop()
+            # XXX
+            iperf_batch_time = 10
+            print(nodes)
             result = loop.run_until_complete(
                 run_iperf_batch(
                     concurrency,
