@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import sys
 
@@ -58,13 +59,16 @@ def run_iperf(*args):
              for name, ip in magpie.get_nodes(cidr=cidr)
              if not units or name in units}
     iperf = Iperf()
-    iperf.batch_hostcheck(
+    results = iperf.batch_hostcheck(
         nodes,
         action_config.get('total-run-time'),
         action_config.get('iperf-batch-time'),
         [int(i) for i in action_config.get('concurrency-progression').split()],
-        push_gateway=push_gateway)
-
+        push_gateway=push_gateway,
+        tag=action_config.get('tag'))
+    hookenv.action_set({
+        "output": json.dumps(results)})
+#
 # Actions to function mapping, to allow for illegal python action names that
 # can map to a python function.
 ACTIONS = {

@@ -162,7 +162,7 @@ class Iperf():
             contents = ctrl_file.read()
         return contents
 
-    def add_iperf_bandwidth_metric(self, registry, src_unit, dst_unit, value):
+    def add_iperf_bandwidth_metric(self, registry, src_unit, dst_unit, value, tag):
         """
         labels:
             fio_{read|write}_{iops,bandwidth,latency}
@@ -172,20 +172,19 @@ class Iperf():
         metric_gauge = Gauge(
             'iperf_{}_to_{}_bandwidth'.format(src_unit, dst_unit),
             'iperf from {} to {} bandwidth (bits/s)'.format(src_unit, dst_unit),
-            ['src', 'dest'],
+            ['model', 'src', 'dest', 'tag'],
             registry=registry)
-        print(value)
-        metric_gauge.labels(src=src_unit, dest=dst_unit).set(value)
+        metric_gauge.labels(model=hookenv.model_name(), src=src_unit, dest=dst_unit, tag=tag).set(value)
 
-    def add_iperf_concurrency_metric(self, registry, src_unit, dst_unit, value):
+    def add_iperf_concurrency_metric(self, registry, src_unit, dst_unit, value, tag):
         metric_gauge = Gauge(
             'iperf_{}_to_{}_concurrency'.format(src_unit, dst_unit),
             'iperf from {} to {} concurrency'.format(src_unit, dst_unit),
-             ['src', 'dest'],
+            ['model', 'src', 'dest', 'tag'],
              registry=registry)
-        metric_gauge.labels(src=src_unit, dest=dst_unit).set(value)
+        metric_gauge.labels(model=hookenv.model_name(), src=src_unit, dest=dst_unit, tag=tag).set(value)
 
-    def process_results(self, results, nodes, push_gateway):
+    def process_results(self, results, nodes, push_gateway, tag):
         bandwidth = {ip:0 for ip in nodes.keys()}
         threads = copy.deepcopy(bandwidth)
         src_unit = hookenv.local_unit().replace('/', '_')
@@ -200,20 +199,20 @@ class Iperf():
                 registry,
                 src_unit,
                 dst_unit,
-                bandwidth[ip])
+                bandwidth[ip],
+                tag)
             self.add_iperf_concurrency_metric(
                 registry,
                 src_unit,
                 dst_unit,
-                threads[ip])
+                threads[ip],
+                tag)
             push_to_gateway(push_gateway,
                 job='iperf',
                 registry=registry)
 
     def batch_hostcheck(self, nodes, total_runtime, iperf_batch_time=None,
-                        progression=None, push_gateway=None):
-        # XXX
-        nodes = {'172.20.0.16': 'magpie/1'}
+                        progression=None, push_gateway=None, tag='default'):
         iperf_batch_time = iperf_batch_time or 60
         progression = progression or [4, 8, 16, 24, 32, 40]
         increment = self.get_increment(total_runtime, progression)
@@ -222,10 +221,10 @@ class Iperf():
             minutes=total_runtime)
 
         self.wipe_batch_ctrl_file()
+        action_output = []
         while datetime.datetime.now() < finish_time:
 
             async def run(cmd):
-                print(cmd)
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -238,7 +237,7 @@ class Iperf():
                 if stderr:
                     print(f'[stderr]\n{stderr.decode()}')
 
-            async def run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=None):
+            async def run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=None, tag='default'):
                 node_name = node_name.replace('/', '_')
                 cmd = "iperf -t{} -c {} --port {}  --reportstyle c".format(
                     iperf_batch_time,
@@ -261,21 +260,20 @@ class Iperf():
                     return results
                 return {}
 
-            async def run_iperf_batch(count, nodes, iperf_batch_time, push_gateway=None):
+            async def run_iperf_batch(count, nodes, iperf_batch_time, push_gateway=None, tag='default'):
                 results = await asyncio.gather(
-                    *[run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=push_gateway)
+                    *[run_iperf(node_name, ip, port, iperf_batch_time, push_gateway=push_gateway, tag=tag)
                       for port in range(self.IPERF_BASE_PORT,
                                         self.IPERF_BASE_PORT + count)
                       for ip, node_name, in nodes.items()])
                 
                 if push_gateway:
-                    self.process_results(results, nodes, push_gateway)
-
+                    self.process_results(results, nodes, push_gateway, tag)
+                return results
 
             contents = self.read_batch_ctrl_file()
             if contents:
                 try:
-                    print("SKIPPING TO {}".format(contents))
                     plan = self.update_plan(plan, int(contents), increment)
                     self.wipe_batch_ctrl_file()
                 except ValueError:
@@ -287,15 +285,15 @@ class Iperf():
                     concurrency,
                     ', '.join([i[0] for i in nodes])))
             loop = asyncio.get_event_loop()
-            # XXX
-            iperf_batch_time = 10
-            print(nodes)
-            result = loop.run_until_complete(
+            results = loop.run_until_complete(
                 run_iperf_batch(
                     concurrency,
                     nodes,
                     iperf_batch_time,
-                    push_gateway=push_gateway))
+                    push_gateway=push_gateway,
+                    tag=tag))
+            action_output.append(results)
+        return results
 
 
 def safe_status(workload, status):
@@ -716,7 +714,7 @@ def check_dns(nodes):
                     if unit_id in nofwd:
                         nofwd.remove(unit_id)
                     if ip != forward:
-                        mstr = '(r\"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"'
+                        mstr = r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"
                         if not re.match(mstr, forward):
                             forward = "Can not resolve hostname to IP {}"\
                                       .format(repr(forward))

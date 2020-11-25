@@ -33,6 +33,11 @@ run-iperf:
         Space seperated list of concurrencty value for each batch
     total-run-time:
       type: integer
-      default: 300
+      default: 10
       description: |
-        Total run time for iperf test
+        Total run time for iperf test in minutes
+    tag:
+      type: string
+      default: default
+      description: |
+        Tag to use when publishing metrics
