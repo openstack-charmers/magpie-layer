@@ -4,5 +4,3 @@ options:
   basic:
     use_venv: True
     include_system_packages: False
-    python_packages: ['prometheus_client']
-
