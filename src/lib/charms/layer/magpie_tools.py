@@ -9,6 +9,7 @@ import math
 import re
 import time
 import json
+import psutil
 from charmhelpers.core import hookenv
 from charmhelpers.core.host import get_nic_mtu, service_start, service_running
 from charmhelpers.fetch import apt_install
@@ -125,7 +126,8 @@ class Iperf():
         for node in nodes:
             msg = "checking iperf on {}".format(node[1])
             hookenv.log(msg)
-            cmd = "iperf -t1 -c {}".format(node[1])
+            cmd = "iperf -t1 -c {} -P{}".format(node[1],
+                                                min(8, self.num_cpus()))
             os.system(cmd)
 
     def get_increment(self, total_runtime, progression):
@@ -139,6 +141,18 @@ class Iperf():
             start_time = now + (i[0] * increment)
             plan.append((start_time, i[1]))
         return plan
+
+    def num_cpus(self):
+        '''
+        Compatibility wrapper for calculating the number of CPU's
+        a unit has.
+
+        @returns: int: number of CPU cores detected
+        '''
+        try:
+            return psutil.cpu_count()
+        except AttributeError:
+            return psutil.NUM_CPUS
 
     def update_plan(self, plan, skip_to, increment):
         progression = []
@@ -170,16 +184,16 @@ class Iperf():
             rados_bench_{read|write}_??
         """
         metric_gauge = Gauge(
-            'iperf_{}_to_{}_bandwidth'.format(src_unit, dst_unit),
-            'iperf from {} to {} bandwidth (bits/s)'.format(src_unit, dst_unit),
+            'magpie_iperf_bandwidth',
+            'magpie iperf bandwidth (bits/s)',
             ['model', 'src', 'dest', 'tag'],
             registry=registry)
         metric_gauge.labels(model=hookenv.model_name(), src=src_unit, dest=dst_unit, tag=tag).set(value)
 
     def add_iperf_concurrency_metric(self, registry, src_unit, dst_unit, value, tag):
         metric_gauge = Gauge(
-            'iperf_{}_to_{}_concurrency'.format(src_unit, dst_unit),
-            'iperf from {} to {} concurrency'.format(src_unit, dst_unit),
+            'magpie_iperf_concurrency',
+            'magpie iperf process concurrency',
             ['model', 'src', 'dest', 'tag'],
              registry=registry)
         metric_gauge.labels(model=hookenv.model_name(), src=src_unit, dest=dst_unit, tag=tag).set(value)
@@ -266,7 +280,7 @@ class Iperf():
                       for port in range(self.IPERF_BASE_PORT,
                                         self.IPERF_BASE_PORT + count)
                       for ip, node_name, in nodes.items()])
-                
+
                 if push_gateway:
                     self.process_results(results, nodes, push_gateway, tag)
                 return results
@@ -293,7 +307,7 @@ class Iperf():
                     push_gateway=push_gateway,
                     tag=tag))
             action_output.append(results)
-        return results
+        return action_output
 
 
 def safe_status(workload, status):
