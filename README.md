@@ -1,3 +1,8 @@
+> **WARNING**: this repository is outdated and has moved to:
+>
+> * https://opendev.org/openstack/charm-magpie
+> * https://github.com/openstack/charm-magpie
+
 # Overview
 
 Magpie is a charm used for testing the networking of a juju provider/substrate.
